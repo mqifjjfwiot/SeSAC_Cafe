@@ -1,5 +1,11 @@
 import pandas as pd
 import numpy as np
+# 카카오 api 위경도 변환용
+import geopandas as gpd
+import requests; from urllib.parse import urlparse
+from shapely.geometry import Point, Polygon, LineString
+# 구글 api 용
+import pprint
 
 def total_data_processing():
     cafe_data()
@@ -346,6 +352,56 @@ def population_data():
     merge_df.to_csv('./after/population_data.csv', encoding='cp949')
 
 
+def kagoo_address_xy(addr):
+    # 위치분석용 라이브러리 geopandas는 프롬프트로 개별 프로세스 거쳐야함
+    # 출처 : https://codedragon.tistory.com/9556
+    try:
+        result = ""
+        url = 'https://dapi.kakao.com/v2/local/search/address.json?query=' + addr
+        rest_api_key = 'd14be6002a90d442569859af3ed267bf'
+        header = {'Authorization': 'KakaoAK ' + rest_api_key}
+
+        r = requests.get(url, headers=header)
+        if r.status_code == 200:
+            try:
+                result_address = r.json()["documents"][0]["address"]
+                result = result_address["y"], result_address["x"]
+            except:
+                # 응답은 왔으나 빈 데이터가 왔을 경우.
+                # 구글 api로 한번만 더 돌려보자.
+                # google api로 다시 트라이
+                apikey = 'AIzaSyA8xeL4urGef52RBv-5blyg-PjI7Uh9Uf0'
+
+                # Local(테스트) 환경 - https 요청이 필요없고, API Key가 따로 필요하지 않지만 횟수에 제약이 있습니다.
+                # URL = 'http://maps.googleapis.com/maps/api/geocode/json?sensor=false&language=ko&address={}'.format(location)
+                # Production(실제 서비스) 환경 - https 요청이 필수이고, API Key 발급(사용설정) 및 과금 설정이 반드시 필요합니다.
+                URL = 'https://maps.googleapis.com/maps/api/geocode/json?key=' + apikey + '&sensor=false&language=ko&address={}'.format(
+                    addr)
+                # JSON 파싱. 여기서 response에러가 난다면 곧바로 except로.
+                try:
+                    # URL로 보낸 Requst의 Response를 response 변수에 할당
+                    # 약 2000건
+                    response = requests.get(URL)
+                    data = response.json()
+                    # lat, lon 추출
+                    lat = data['results'][0]['geometry']['location']['lat']
+                    lng = data['results'][0]['geometry']['location']['lng']
+                    result = lat, lng
+                except:
+                    # 약 100여건
+                    # 구글 api까지 거른 용자들. 그냥 (0,0)처리하자.
+                    result = (0, 0)
+
+        else:
+            # 0건
+            result = (0, 0)
+    except TypeError as e:
+        # 약 200여건
+        result = (0, 0)
+
+    return result
+
+
 def cafe_data():
     # 원본 데이터 출처
     ## 서울특별시 휴게음식점 인허가 정보 : https://data.seoul.go.kr/dataList/OA-16095/S/1/datasetView.do
@@ -356,10 +412,127 @@ def cafe_data():
     ## 1차 정리 - 불량, 아예 안 쓰일 칼럼 정리
     cafe = pd.read_csv('./origin/서울특별시 휴게음식점 인허가 정보.csv', encoding='cp949')
     cafe1 = cafe.drop([
-        '개방자치단체코드','관리번호','영업상태코드','휴업시작일자','휴업종료일자','재개업일자','전화번호','소재지우편번호','도로명우편번호','최종수정일자','데이터갱신구분',
-        '데이터갱신일자','위생업태명','남성종사자수','여성종사자수','영업장주변구분명','등급구분명','급수시설구분명','총인원','본사종업원수','공장사무직종업원수',
-        '공장판매직종업원수','공장생산직종업원수','건물소유구분명','보증액','월세액','다중이용업소여부','시설총규모','전통업소지정번호','전통업소주된음식','홈페이지'
+        '개방자치단체코드', '관리번호', '영업상태코드', '휴업시작일자', '휴업종료일자', '재개업일자', '전화번호', '소재지우편번호', '도로명우편번호', '최종수정일자', '데이터갱신구분',
+        '데이터갱신일자', '위생업태명', '남성종사자수', '여성종사자수', '영업장주변구분명', '등급구분명', '급수시설구분명', '총인원', '본사종업원수', '공장사무직종업원수',
+        '공장판매직종업원수', '공장생산직종업원수', '건물소유구분명', '보증액', '월세액', '다중이용업소여부', '시설총규모', '전통업소지정번호', '전통업소주된음식', '홈페이지'
     ], axis=1)
 
     ## 1차 데이터 저장. 확인완료.
     # cafe1.to_csv('./after/cafe_data1.csv', index = False, encoding='cp949')
+    df1 = cafe1[cafe1['업태구분명'] == '커피숍']
+    df2 = cafe1[cafe1['업태구분명'] == '다방']
+    df3 = cafe1[cafe1['업태구분명'] == '기타 휴게음식점']
+
+    # df3에서 잘못분류된 카페 찾기, 데이터 처리
+    # 원본 데이터의 업태 분류가 기준없이 뒤죽박죽으로 처리되어있어 그대로 쓰기엔 신뢰도가 너무나 낮다
+    # 사업장명에 '커피','카페','cafe'이 포함된 데이터 체크
+    c1 = df3[df3['사업장명'].str.contains('커피')]
+    c2 = df3[df3['사업장명'].str.contains('카페')]
+    c3 = df3[df3['사업장명'].str.contains('cafe')]
+    # 사업장명에 카페 프렌차이즈명이 포함되어 있는 데이터 체크. 항목별로 0~20개 남짓의 데이터 확인됨.
+    c4 = df3[df3['사업장명'].str.contains('스타벅스')]
+    c5 = df3[df3['사업장명'].str.contains('투썸')]
+    c6 = df3[df3['사업장명'].str.contains('메가엠지씨')]
+    c7 = df3[df3['사업장명'].str.contains('메가MGC')]
+    c8 = df3[df3['사업장명'].str.contains('이디야')]
+    c9 = df3[df3['사업장명'].str.contains('빽다방')]
+    c10 = df3[df3['사업장명'].str.contains('폴바셋')]
+    c11 = df3[df3['사업장명'].str.contains('할리스')]
+    c12 = df3[df3['사업장명'].str.contains('커피빈')]
+    c13 = df3[df3['사업장명'].str.contains('엔제리너스')]
+    c14 = df3[df3['사업장명'].str.contains('파스쿠찌')]
+    c15 = df3[df3['사업장명'].str.contains('커피나무')]
+    c16 = df3[df3['사업장명'].str.contains('커피베이')]
+    c17 = df3[df3['사업장명'].str.contains('탐앤탐스')]
+    c18 = df3[df3['사업장명'].str.contains('카페베네')]
+    c19 = df3[df3['사업장명'].str.contains('더착한커피')]
+    c20 = df3[df3['사업장명'].str.contains('만랩커피')]
+    c21 = df3[df3['사업장명'].str.contains('달콤커피')]
+    c22 = df3[df3['사업장명'].str.contains('커피에반하다')]
+    c23 = df3[df3['사업장명'].str.contains('셀렉토')]
+    c24 = df3[df3['사업장명'].str.contains('매머드')]
+    c25 = df3[df3['사업장명'].str.contains('드롭탑')]
+    c26 = df3[df3['사업장명'].str.contains('명가커피')]
+    c27 = df3[df3['사업장명'].str.contains('커피스미스')]
+    c28 = df3[df3['사업장명'].str.contains('커피마마')]
+    c29 = df3[df3['사업장명'].str.contains('토프레소')]
+    c30 = df3[df3['사업장명'].str.contains('전광수커피')]
+    c31 = df3[df3['사업장명'].str.contains('빈스빈스')]
+    c32 = df3[df3['사업장명'].str.contains('더카페')]
+    c33 = df3[df3['사업장명'].str.contains('그라찌에')]
+    c34 = df3[df3['사업장명'].str.contains('카페보니또')]
+
+    # 위의 뽑아놓은 행들 전부 일괄 수취
+    d1 = pd.concat(
+        [c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22, c23, c24,
+         c25, c26, c27, c28, c29, c30, c31, c32, c33, c34], axis=0)
+
+    # 중복된 열 제거
+    d1 = d1.drop_duplicates()
+
+    # 업태구분명(커피숍+다방+기타휴게음식점) 합치기
+    # 약 48000여개 행.
+    df = pd.concat([df1, df2, d1], axis=0)
+
+    ## 중간중간, 불량 데이터 필터링하는 함수 정의. 후 사용
+    # blacklist.txt에 필터링할 어휘들 저장.
+    f = open("blacklist.txt", 'r', encoding='utf8')
+    lines = f.readlines()
+    for line in lines:
+        line = line.strip()
+        select_index = df[df['사업장명'].str.contains(line)].index
+        df = df.drop(index=select_index)
+    f.close()
+
+    # 지번 주소를 베이스로 카카오 주소 API를 활용, 기존의 좌표 데이터를 위경도 데이터로 변환.
+    # 관계없는 업종명으로 정리된 데이터 복사해 원본 보존.
+    df2 = df
+    long_li = []
+    lat_li = []
+
+    for i in df2['지번주소']:
+        li_li = kagoo_address_xy(i)
+        long_li.append(li_li[1])
+        lat_li.append(li_li[0])
+
+    # 기존의 수정 되느라 뒤섞인 인덱스 리셋, 정리.
+    df2.reset_index(drop=True, inplace=True)
+
+    # 좌표군 리스트를 시리즈화 시키고 열에 삽입.
+    df2['long'] = pd.Series(long_li)
+    df2['lat'] = pd.Series(lat_li)
+
+    # 변환 거친 뒤 기존의 좌표정보 칼럼 삭제
+    df2.drop(['좌표정보(X)'], axis=1, inplace=True)
+    df2.drop(['좌표정보(Y)'], axis=1, inplace=True)
+
+
+    ## 여기까지 좌표 변환 완료
+    # df2.to_csv('./after/seoul_coffee2.csv', index=False, encoding='cp949')
+
+    # 주소 변환후 좌표가 (0,0)인 행들 결측치 처리. 삭제
+    df_drop = df2[df2['long'] == 0]
+    df2 = df2.drop(index=df_drop.index)
+
+
+    # ## 프렌차이즈 작업 전 데이터셋 정리
+    # # 상세영업상태코드를 영업1 폐업0으로 변환
+    # for i in range(len(df2.index)):
+    #     if df2.loc[i, '상세영업상태코드'] == 2:
+    #         df2.loc[i, '상세영업상태코드'] = 0
+    #     else:
+    #         df2.loc[i, '상세영업상태코드'] = 1
+    # df2.rename(columns={'상세영업상태코드': '영업상태코드'}, inplace=True)
+    #
+    # # 폐업일자 빈칸인곳에 NaN
+    # df2['폐업일자'] = df2['폐업일자'].replace(np.nan, 0)
+    #
+    # ## 프렌차이즈 확인 칼럼 생성
+    # # 데이터 복사&보존
+    # df3 = df2
+    # fran_high = ['스타벅스', '투썸', '폴바셋', '할리스', '커피빈', '엔제리너스', '파스쿠찌', '탐앤탐스', '카페베네', '달콤커피', '드롭탑', '명가커피', '커피스미스',
+    #               '전광수커피', '빈스빈스', '카페보니또']
+    # fran_low = ['메가MGC', '메가엠지씨', '이디야', '빽다방','커피나무', '커피베이', '더착한커피', '만랩커피', '커피에반하다', '셀렉토', '메머드', '커피마마',
+    #              '토프레소', '더카페', '그라찌에']
+
+
