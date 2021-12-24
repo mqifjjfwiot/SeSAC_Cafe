@@ -6,6 +6,8 @@ import requests; from urllib.parse import urlparse
 from shapely.geometry import Point, Polygon, LineString
 # 구글 api 용
 import pprint
+# 좌표계 변환용
+from pyproj import Proj, transform
 
 def total_data_processing():
     cafe_data()
@@ -13,7 +15,8 @@ def total_data_processing():
     subway_data_processing()
     traffic_data()
     population_data()
-
+    culture_data()
+    area_data()
 
 def bus_data_processing():
     # 원본 데이터 출처
@@ -407,132 +410,250 @@ def cafe_data():
     ## 서울특별시 휴게음식점 인허가 정보 : https://data.seoul.go.kr/dataList/OA-16095/S/1/datasetView.do
 
     # 데이터 자체의 카테고리 분류는 신뢰도가 낮아 밑에서 별도의 수작업 분류를 병행하였음
+
+    ### 좌표 재구축을 위한 api 가동이 2~3시간 걸림. 따라서 좌표 재구축을 완료한 시점에서 1차 중간저장을 시행하며, 중간 저장물이 있다면 이후부터 시작, 없다면 처음부터 시작하게한다.
+    try :
+        df2 = pd.read_csv('./after/seoul_coffee2.csv', encoding='cp949')
+    except :
+        # 1차 정리 파일이 없어서 에러 - 처음부터 전처리 과정 실행.
+        ## 1차 정리 - 불량, 아예 안 쓰일 칼럼 정리
+        cafe = pd.read_csv('./origin/서울특별시 휴게음식점 인허가 정보.csv', encoding='cp949')
+        cafe1 = cafe.drop([
+            '개방자치단체코드', '관리번호', '영업상태코드', '휴업시작일자', '휴업종료일자', '재개업일자', '전화번호', '소재지우편번호', '도로명우편번호', '최종수정일자', '데이터갱신구분',
+            '데이터갱신일자', '위생업태명', '남성종사자수', '여성종사자수', '영업장주변구분명', '등급구분명', '급수시설구분명', '총인원', '본사종업원수', '공장사무직종업원수',
+            '공장판매직종업원수', '공장생산직종업원수', '건물소유구분명', '보증액', '월세액', '다중이용업소여부', '시설총규모', '전통업소지정번호', '전통업소주된음식', '홈페이지'
+        ], axis=1)
+
+        ## 1차 데이터 저장. 확인완료.
+        # cafe1.to_csv('./after/cafe_data1.csv', index = False, encoding='cp949')
+        df1 = cafe1[cafe1['업태구분명'] == '커피숍']
+        df2 = cafe1[cafe1['업태구분명'] == '다방']
+        df3 = cafe1[cafe1['업태구분명'] == '기타 휴게음식점']
+
+        # df3에서 잘못분류된 카페 찾기, 데이터 처리
+        # 원본 데이터의 업태 분류가 기준없이 뒤죽박죽으로 처리되어있어 그대로 쓰기엔 신뢰도가 너무나 낮다
+        # 사업장명에 '커피','카페','cafe'이 포함된 데이터 체크
+        c1 = df3[df3['사업장명'].str.contains('커피')]
+        c2 = df3[df3['사업장명'].str.contains('카페')]
+        c3 = df3[df3['사업장명'].str.contains('cafe')]
+        # 사업장명에 카페 프렌차이즈명이 포함되어 있는 데이터 체크. 항목별로 0~20개 남짓의 데이터 확인됨.
+        c4 = df3[df3['사업장명'].str.contains('스타벅스')]
+        c5 = df3[df3['사업장명'].str.contains('투썸')]
+        c6 = df3[df3['사업장명'].str.contains('메가엠지씨')]
+        c7 = df3[df3['사업장명'].str.contains('메가MGC')]
+        c8 = df3[df3['사업장명'].str.contains('이디야')]
+        c9 = df3[df3['사업장명'].str.contains('빽다방')]
+        c10 = df3[df3['사업장명'].str.contains('폴바셋')]
+        c11 = df3[df3['사업장명'].str.contains('할리스')]
+        c12 = df3[df3['사업장명'].str.contains('커피빈')]
+        c13 = df3[df3['사업장명'].str.contains('엔제리너스')]
+        c14 = df3[df3['사업장명'].str.contains('파스쿠찌')]
+        c15 = df3[df3['사업장명'].str.contains('커피나무')]
+        c16 = df3[df3['사업장명'].str.contains('커피베이')]
+        c17 = df3[df3['사업장명'].str.contains('탐앤탐스')]
+        c18 = df3[df3['사업장명'].str.contains('카페베네')]
+        c19 = df3[df3['사업장명'].str.contains('더착한커피')]
+        c20 = df3[df3['사업장명'].str.contains('만랩커피')]
+        c21 = df3[df3['사업장명'].str.contains('달콤커피')]
+        c22 = df3[df3['사업장명'].str.contains('커피에반하다')]
+        c23 = df3[df3['사업장명'].str.contains('셀렉토')]
+        c24 = df3[df3['사업장명'].str.contains('매머드')]
+        c25 = df3[df3['사업장명'].str.contains('드롭탑')]
+        c26 = df3[df3['사업장명'].str.contains('명가커피')]
+        c27 = df3[df3['사업장명'].str.contains('커피스미스')]
+        c28 = df3[df3['사업장명'].str.contains('커피마마')]
+        c29 = df3[df3['사업장명'].str.contains('토프레소')]
+        c30 = df3[df3['사업장명'].str.contains('전광수커피')]
+        c31 = df3[df3['사업장명'].str.contains('빈스빈스')]
+        c32 = df3[df3['사업장명'].str.contains('더카페')]
+        c33 = df3[df3['사업장명'].str.contains('그라찌에')]
+        c34 = df3[df3['사업장명'].str.contains('카페보니또')]
+
+        # 위의 뽑아놓은 행들 전부 일괄 수취
+        d1 = pd.concat(
+            [c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22, c23, c24,
+             c25, c26, c27, c28, c29, c30, c31, c32, c33, c34], axis=0)
+
+        # 중복된 열 제거
+        d1 = d1.drop_duplicates()
+
+        # 업태구분명(커피숍+다방+기타휴게음식점) 합치기
+        # 약 48000여개 행.
+        df = pd.concat([df1, df2, d1], axis=0)
+
+        ## 중간중간, 불량 데이터 필터링하는 함수 정의. 후 사용
+        # blacklist.txt에 필터링할 어휘들 저장.
+        f = open("blacklist.txt", 'r', encoding='utf8')
+        lines = f.readlines()
+        for line in lines:
+            line = line.strip()
+            select_index = df[df['사업장명'].str.contains(line)].index
+            df = df.drop(index=select_index)
+        f.close()
+
+        # 지번 주소를 베이스로 카카오 주소 API를 활용, 기존의 좌표 데이터를 위경도 데이터로 변환.
+        # 관계없는 업종명으로 정리된 데이터 복사해 원본 보존.
+        df2 = df
+        long_li = []
+        lat_li = []
+
+        for i in df2['지번주소']:
+            li_li = kagoo_address_xy(i)
+            long_li.append(li_li[1])
+            lat_li.append(li_li[0])
+
+        # 기존의 수정 되느라 뒤섞인 인덱스 리셋, 정리.
+        df2.reset_index(drop=True, inplace=True)
+
+        # 좌표군 리스트를 시리즈화 시키고 열에 삽입.
+        df2['long'] = pd.Series(long_li)
+        df2['lat'] = pd.Series(lat_li)
+
+        # 변환 거친 뒤 기존의 좌표정보 칼럼 삭제
+        df2.drop(['좌표정보(X)'], axis=1, inplace=True)
+        df2.drop(['좌표정보(Y)'], axis=1, inplace=True)
+
+
+        ## 여기까지 좌표 변환 완료
+        df2.to_csv('./after/seoul_coffee2.csv', index=False, encoding='cp949')
+
+    finally :
+        # 1차 처리 전처리 파일 오픈 성공.
+        # 주소 변환후 좌표가 (0,0)인 행들 결측치 처리. 삭제
+        df_drop = df2[df2['long'] == 0]
+        df2 = df2.drop(index=df_drop.index)
+
+        ## 프렌차이즈 작업 전 데이터셋 정리
+        # 상세영업상태코드를 영업1 폐업0으로 변환
+        df2['상세영업상태코드'] = df2['상세영업상태코드'].map({2: 0, 1: 1})
+
+        df2.rename(columns={'상세영업상태코드': '영업상태코드'}, inplace=True)
+
+        # 폐업일자 빈칸인곳에 NaN
+        df2['폐업일자'] = df2['폐업일자'].replace(np.nan, 0)
+
+        # 도로명 주소 제거. 지번주소만 남김
+        df2.drop(['도로명주소'], axis=1, inplace=True)
+
+        # 인허가 취소 칼럼 삭제
+        df2.drop(['인허가취소일자'], axis=1, inplace=True)
+
+        # 비슷한 역할 하는 영업상태명 관련 칼럼 정리
+        df2.drop(['영업상태명', '상세영업상태명'], axis=1, inplace=True)
+
+        ## 프렌차이즈 확인 칼럼 생성
+        # 기본 메뉴인 아메리카노 한잔의 가격을 기준으로, 3500이상이면 고가 프렌차이즈, 미만이면 저가 프렌차이즈로 구분.
+        # 조사 대상이 된 프렌차이즈는 한국 30대 프렌차이즈를 대상으로 함.
+        # 최종적으로 0 : 저가형 프렌차이즈, 1 : 고가형 프렌차이즈, 2 : 기타, 개인카페 으로 라벨링.
+        fran_high = ['스타벅스', '투썸', '폴바셋', '할리스', '커피빈', '엔제리너스', '파스쿠찌', '탐앤탐스', '카페베네', '달콤커피', '드롭탑', '명가커피', '커피스미스',
+                      '전광수커피', '빈스빈스', '카페보니또']
+        fran_low = ['메가MGC', '메가엠지씨', '이디야', '빽다방','커피나무', '커피베이', '더착한커피', '만랩커피', '커피에반하다', '셀렉토', '메머드', '커피마마',
+                     '토프레소', '더카페', '그라찌에']
+
+        # 상호일치 여부 검색용 스트링 지정
+        high = '|'.join(fran_high)
+        low = '|'.join(fran_low)
+        df2['fhigh'] = df2['사업장명'].str.contains(high)
+        df2['flow'] = df2['사업장명'].str.contains(low)
+
+        df2['fhigh'] = df2['fhigh'].map({True: 2, False: 0}, na_action=None)
+        df2['flow'] = df2['flow'].map({True: 1, False: 0}, na_action=None)
+        df2['franchise'] = df2['fhigh'] + df2['flow']
+        # 남아있던 카페는 기타로 분류, 저가 1은 0으로 고가 2는 1로 조정.
+        df2['franchise'] = df2['franchise'].map({0: 2, 2: 1, 1: 0})
+
+        # 임시로 썼던 칼럼 제거
+        df2.drop(['fhigh'], axis=1, inplace=True)
+        df2.drop(['flow'], axis=1, inplace=True)
+
+        # 카페 면적은 분포도 50%인 52.5와 면적 2000이상의 이상치를 제거한 평균값 69.7818 중 분포도 중간값을 기준으로 빈칸 정리.
+        df2[df2['소재지면적'] < 0.1 ] =  52.5
+        df2[df2['소재지면적'] > 2000] = 52.5
+        df2['소재지면적'] = df2['소재지면적'].fillna('52.5')
+
+        df2.to_csv('./after/cafe_data.csv', index=False, encoding='cp949')
+
+
+def culture_data():
     #
+    # 원 데이터셋 출처
+    # http://data.seoul.go.kr/dataList/OA-15487/S/1/datasetView.do
+    df = pd.read_csv('./origin/서울시 문화공간 정보.csv', encoding='cp949')
 
-    ## 1차 정리 - 불량, 아예 안 쓰일 칼럼 정리
-    cafe = pd.read_csv('./origin/서울특별시 휴게음식점 인허가 정보.csv', encoding='cp949')
-    cafe1 = cafe.drop([
-        '개방자치단체코드', '관리번호', '영업상태코드', '휴업시작일자', '휴업종료일자', '재개업일자', '전화번호', '소재지우편번호', '도로명우편번호', '최종수정일자', '데이터갱신구분',
-        '데이터갱신일자', '위생업태명', '남성종사자수', '여성종사자수', '영업장주변구분명', '등급구분명', '급수시설구분명', '총인원', '본사종업원수', '공장사무직종업원수',
-        '공장판매직종업원수', '공장생산직종업원수', '건물소유구분명', '보증액', '월세액', '다중이용업소여부', '시설총규모', '전통업소지정번호', '전통업소주된음식', '홈페이지'
-    ], axis=1)
+    df = df.drop("번호", axis=1)
+    df = df.drop("전화번호", axis=1)
+    df = df.drop("팩스번호", axis=1)
+    df = df.drop("홈페이지", axis=1)
+    df = df.drop("관람시간", axis=1)
+    df = df.drop("관람료", axis=1)
+    df = df.drop("휴관일", axis=1)
+    df = df.drop("개관일자", axis=1)
+    df = df.drop("객석수", axis=1)
+    df = df.drop("대표이미지", axis=1)
+    df = df.drop("기타사항", axis=1)
+    df = df.drop("시설소개", axis=1)
+    df = df.drop("무료구분", axis=1)
+    df = df.drop("지하철", axis=1)
+    df = df.drop("버스정거장", axis=1)
+    df = df.drop("YELLOW", axis=1)
+    df = df.drop("GREEN", axis=1)
+    df = df.drop("BLUE", axis=1)
+    df = df.drop("RED", axis=1)
+    df = df.drop("공항버스", axis=1)
 
-    ## 1차 데이터 저장. 확인완료.
-    # cafe1.to_csv('./after/cafe_data1.csv', index = False, encoding='cp949')
-    df1 = cafe1[cafe1['업태구분명'] == '커피숍']
-    df2 = cafe1[cafe1['업태구분명'] == '다방']
-    df3 = cafe1[cafe1['업태구분명'] == '기타 휴게음식점']
-
-    # df3에서 잘못분류된 카페 찾기, 데이터 처리
-    # 원본 데이터의 업태 분류가 기준없이 뒤죽박죽으로 처리되어있어 그대로 쓰기엔 신뢰도가 너무나 낮다
-    # 사업장명에 '커피','카페','cafe'이 포함된 데이터 체크
-    c1 = df3[df3['사업장명'].str.contains('커피')]
-    c2 = df3[df3['사업장명'].str.contains('카페')]
-    c3 = df3[df3['사업장명'].str.contains('cafe')]
-    # 사업장명에 카페 프렌차이즈명이 포함되어 있는 데이터 체크. 항목별로 0~20개 남짓의 데이터 확인됨.
-    c4 = df3[df3['사업장명'].str.contains('스타벅스')]
-    c5 = df3[df3['사업장명'].str.contains('투썸')]
-    c6 = df3[df3['사업장명'].str.contains('메가엠지씨')]
-    c7 = df3[df3['사업장명'].str.contains('메가MGC')]
-    c8 = df3[df3['사업장명'].str.contains('이디야')]
-    c9 = df3[df3['사업장명'].str.contains('빽다방')]
-    c10 = df3[df3['사업장명'].str.contains('폴바셋')]
-    c11 = df3[df3['사업장명'].str.contains('할리스')]
-    c12 = df3[df3['사업장명'].str.contains('커피빈')]
-    c13 = df3[df3['사업장명'].str.contains('엔제리너스')]
-    c14 = df3[df3['사업장명'].str.contains('파스쿠찌')]
-    c15 = df3[df3['사업장명'].str.contains('커피나무')]
-    c16 = df3[df3['사업장명'].str.contains('커피베이')]
-    c17 = df3[df3['사업장명'].str.contains('탐앤탐스')]
-    c18 = df3[df3['사업장명'].str.contains('카페베네')]
-    c19 = df3[df3['사업장명'].str.contains('더착한커피')]
-    c20 = df3[df3['사업장명'].str.contains('만랩커피')]
-    c21 = df3[df3['사업장명'].str.contains('달콤커피')]
-    c22 = df3[df3['사업장명'].str.contains('커피에반하다')]
-    c23 = df3[df3['사업장명'].str.contains('셀렉토')]
-    c24 = df3[df3['사업장명'].str.contains('매머드')]
-    c25 = df3[df3['사업장명'].str.contains('드롭탑')]
-    c26 = df3[df3['사업장명'].str.contains('명가커피')]
-    c27 = df3[df3['사업장명'].str.contains('커피스미스')]
-    c28 = df3[df3['사업장명'].str.contains('커피마마')]
-    c29 = df3[df3['사업장명'].str.contains('토프레소')]
-    c30 = df3[df3['사업장명'].str.contains('전광수커피')]
-    c31 = df3[df3['사업장명'].str.contains('빈스빈스')]
-    c32 = df3[df3['사업장명'].str.contains('더카페')]
-    c33 = df3[df3['사업장명'].str.contains('그라찌에')]
-    c34 = df3[df3['사업장명'].str.contains('카페보니또')]
-
-    # 위의 뽑아놓은 행들 전부 일괄 수취
-    d1 = pd.concat(
-        [c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22, c23, c24,
-         c25, c26, c27, c28, c29, c30, c31, c32, c33, c34], axis=0)
-
-    # 중복된 열 제거
-    d1 = d1.drop_duplicates()
-
-    # 업태구분명(커피숍+다방+기타휴게음식점) 합치기
-    # 약 48000여개 행.
-    df = pd.concat([df1, df2, d1], axis=0)
-
-    ## 중간중간, 불량 데이터 필터링하는 함수 정의. 후 사용
-    # blacklist.txt에 필터링할 어휘들 저장.
-    f = open("blacklist.txt", 'r', encoding='utf8')
-    lines = f.readlines()
-    for line in lines:
-        line = line.strip()
-        select_index = df[df['사업장명'].str.contains(line)].index
-        df = df.drop(index=select_index)
-    f.close()
-
-    # 지번 주소를 베이스로 카카오 주소 API를 활용, 기존의 좌표 데이터를 위경도 데이터로 변환.
-    # 관계없는 업종명으로 정리된 데이터 복사해 원본 보존.
-    df2 = df
-    long_li = []
-    lat_li = []
-
-    for i in df2['지번주소']:
-        li_li = kagoo_address_xy(i)
-        long_li.append(li_li[1])
-        lat_li.append(li_li[0])
-
-    # 기존의 수정 되느라 뒤섞인 인덱스 리셋, 정리.
-    df2.reset_index(drop=True, inplace=True)
-
-    # 좌표군 리스트를 시리즈화 시키고 열에 삽입.
-    df2['long'] = pd.Series(long_li)
-    df2['lat'] = pd.Series(lat_li)
-
-    # 변환 거친 뒤 기존의 좌표정보 칼럼 삭제
-    df2.drop(['좌표정보(X)'], axis=1, inplace=True)
-    df2.drop(['좌표정보(Y)'], axis=1, inplace=True)
+    # 기타          187
+    # 공연장        162
+    # 미술관        122
+    # 박물관/기념관  115
+    # 도서관        108
+    # 문화원        35
+    # 문화예술회관   31
+    df.to_csv('./after/culture_data.csv', index=False, encoding='cp949')
 
 
-    ## 여기까지 좌표 변환 완료
-    # df2.to_csv('./after/seoul_coffee2.csv', index=False, encoding='cp949')
+def xy_trans(x, y):
+    # 좌표체계 바꾸는 함수.
+    # 좌표계 종류가 다르면 수정 혹은 재지정 해줘야 한다.
+    # 중부원점(Bessel): 서울 등 중부지역 EPSG:5181
+    proj_1 = Proj(init='epsg:5181')
 
-    # 주소 변환후 좌표가 (0,0)인 행들 결측치 처리. 삭제
-    df_drop = df2[df2['long'] == 0]
-    df2 = df2.drop(index=df_drop.index)
+    # WGS84 경위도: GPS가 사용하는 좌표계 EPSG:4326
+    proj_2 = Proj(init='epsg:4326')
 
-
-    # ## 프렌차이즈 작업 전 데이터셋 정리
-    # # 상세영업상태코드를 영업1 폐업0으로 변환
-    # for i in range(len(df2.index)):
-    #     if df2.loc[i, '상세영업상태코드'] == 2:
-    #         df2.loc[i, '상세영업상태코드'] = 0
-    #     else:
-    #         df2.loc[i, '상세영업상태코드'] = 1
-    # df2.rename(columns={'상세영업상태코드': '영업상태코드'}, inplace=True)
-    #
-    # # 폐업일자 빈칸인곳에 NaN
-    # df2['폐업일자'] = df2['폐업일자'].replace(np.nan, 0)
-    #
-    # ## 프렌차이즈 확인 칼럼 생성
-    # # 데이터 복사&보존
-    # df3 = df2
-    # fran_high = ['스타벅스', '투썸', '폴바셋', '할리스', '커피빈', '엔제리너스', '파스쿠찌', '탐앤탐스', '카페베네', '달콤커피', '드롭탑', '명가커피', '커피스미스',
-    #               '전광수커피', '빈스빈스', '카페보니또']
-    # fran_low = ['메가MGC', '메가엠지씨', '이디야', '빽다방','커피나무', '커피베이', '더착한커피', '만랩커피', '커피에반하다', '셀렉토', '메머드', '커피마마',
-    #              '토프레소', '더카페', '그라찌에']
+    x_, y_ = transform(proj_1, proj_2, x, y)
+    return (x_, y_)
 
 
+def area_data():
+    # 원본 데이터 출처
+    # https://data.seoul.go.kr/dataList/OA-15560/S/1/datasetView.doa
+    df = pd.read_csv('./origin/서울시 우리마을가게 상권분석서비스(상권영역).csv', encoding='cp949')
+
+    # 데이터 프레임 복사
+    DataFrame = df.copy()
+
+    # 새 좌표 넣을 빈 리스트 생성
+    x_list = []
+    y_list = []
+
+    # 변환 시작
+    for idx, row in DataFrame.iterrows():
+        x, y = row['엑스좌표_값'], row['와이좌표_값']
+        x_, y_ = xy_trans(x, y)
+        x_list.append(x_)
+        y_list.append(y_)
+
+    df['lon'] = x_list
+    df['lat'] = y_list
+
+    df = df.drop("기준_년월_코드", axis=1)
+    df = df.drop("엑스좌표_값", axis=1)
+    df = df.drop("와이좌표_값", axis=1)
+    df = df.drop("시군구_코드", axis=1)
+    df = df.drop("행정동_코드", axis=1)
+    df = df.drop("형태정보", axis=1)
+
+
+    # 상권_구분_코드,	상권_구분_코드_명,	상권_코드,  상권_코드_명,    lon,   lat
+
+    df.to_csv('./after/area_data.csv', index=False, encoding='cp949')
