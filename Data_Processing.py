@@ -8,6 +8,11 @@ from shapely.geometry import Point, Polygon, LineString
 import pprint
 # 좌표계 변환용
 from pyproj import Proj, transform
+# 오늘 날짜 체크용
+import datetime
+# 위도 경도 거리 계산용
+from haversine import haversine
+
 
 def total_data_processing():
     cafe_data()
@@ -17,6 +22,7 @@ def total_data_processing():
     population_data()
     culture_data()
     area_data()
+
 
 def bus_data_processing():
     # 원본 데이터 출처
@@ -177,6 +183,7 @@ def subway_data_processing():
 
 
     ## 지하철 좌표 전처리
+    # 해당 좌표는 https://observablehq.com/@taekie/seoul_subway_station_coordinate 에서 수기로 가져옴.
     sl = pd.read_csv('./origin/지하철 좌표.csv')
 
     # 중복된값을 제거해서 하나로 정리
@@ -405,6 +412,36 @@ def kagoo_address_xy(addr):
     return result
 
 
+def gu_finder(x, y):
+    # GPS 좌표계 좌표를 입력하면 그곳이 어느 구인지 출력해주는 공공 API 함수.
+    # 좌표는 숫자가 아닌 str로 입력해줘야 해서 URL입력시 두 변수를 str으로 형변환 시켜준다.
+    # https://dev.vworld.kr/dev/v4dv_2ddataguide2_s002.do?svcIde=adsigg
+    apikey = 'C86E1B98-0AD1-3040-BA11-E81EA4BC70BA'
+    URL = 'http://api.vworld.kr/req/data?service=data&request=GetFeature&data=LT_C_ADSIGG_INFO&key=' + apikey + '&geomFilter=point(' + str(x) + ' ' + str(y) + ')&crs=EPSG:4326'
+    r = requests.get(URL)
+    if r.status_code == 200:
+        data = r.json()
+        # 시 까지 포함해서 출력하려면 ['sig_kor_nm'] 대신 ['full_nm']
+        result = data['response']['result']['featureCollection']['features'][0]['properties']['sig_kor_nm']
+    else :
+        result = '가동 에러'
+    return result
+
+
+def cal_distance(x1,y1,x2,y2):
+    ## WGS84 경위도 = EPSG:4326 하에서 좌표 0.0054 차이 = 약 600m
+    ## 0.0018 차이 = 약 200m
+    ## 0.0009 차이 = 약 100m
+
+    ## 거리를 계산할때 전부 하면 미친놈이기 때문에, 반경과 같은 길이를 갖는 정사각형 영역내의 점들만 계산에 동원한다.
+    # ex) 반경 200m내의 조사를 하고 싶다면 기준 좌표 + - 0.0018 내에 존재하는 좌표 소유자만 계산에 동원하는 방식.
+    standard = (x1, y1)
+    object = (x2, y2)
+
+    distance = haversine(standard, object) * 1000
+    return distance
+
+
 def cafe_data():
     # 원본 데이터 출처
     ## 서울특별시 휴게음식점 인허가 정보 : https://data.seoul.go.kr/dataList/OA-16095/S/1/datasetView.do
@@ -567,9 +604,49 @@ def cafe_data():
         df2.drop(['flow'], axis=1, inplace=True)
 
         # 카페 면적은 분포도 50%인 52.5와 면적 2000이상의 이상치를 제거한 평균값 69.7818 중 분포도 중간값을 기준으로 빈칸 정리.
-        df2[df2['소재지면적'] < 0.1 ] =  52.5
-        df2[df2['소재지면적'] > 2000] = 52.5
+        df2['소재지면적'][df2['소재지면적'] < 0.1] = 52.5
+        df2['소재지면적'][df2['소재지면적'] > 2000] = 52.5
         df2['소재지면적'] = df2['소재지면적'].fillna('52.5')
+
+        # 타겟데이터 in
+        # 기준 : 현재 영업중인 카페 -> 2년 이상이면 성공, 미만이면 실패(제외) 판정
+        #       폐업한 카페 -> 3년 이상 영업했으면 성공, 미만이면 실패 판정
+
+        # 새 칼럼 생성
+        df2['target'] = 1
+        df2.reset_index(drop=True, inplace=True)
+
+
+        # 기준에 맞춰 코드 삽입
+        code = []
+        for i in range(len(df2["인허가일자"])):
+            # 폐업 한 가게
+            if df2["영업상태코드"][i] == 0:
+                # 3년 이상 영업하고 폐업한 가게
+                if df2.iloc[i]['폐업일자'] - df2.iloc[i]['인허가일자'] >= 30000:
+                    code.append(1)
+                    # 3년 못채우고 폐업한 가게
+                else:
+                    code.append(0)
+            # 영업중인 가게
+            else:
+                # 오픈한지 2년 이상 된 가게
+                if int(datetime.date.today().strftime("%Y%m%d")) - df2['인허가일자'][i] >= 20000:
+                    code.append(1)
+                # 오픈한지 2년 이상 된 가게. 우선 2 부여하고 해당 행이 많으면 테스트셋으로, 적으면 0처리하거나 버리자.
+                else:
+                    code.append(2)
+        df2['target'] = code
+        # 입력 결과 : 소위 '애매한' 데이터는 4천여건. 허나 성공 데이터는 이미 28000건이나 있기에 이들을 제외해도 성공:실패 데이터 비율은 2:1이 된다. 고로 삭제해도 무방.
+        # 1    28832
+        # 0    13828
+        # 2     4592
+
+        # 보류해두었던('target' == 2) 데이터 삭제.
+        index1 = df2[df2['target'] == 2].index
+        df2.drop(index1, inplace=True)
+
+        df2.reset_index(drop=True, inplace=True)
 
         df2.to_csv('./after/cafe_data.csv', index=False, encoding='cp949')
 
@@ -601,6 +678,7 @@ def culture_data():
     df = df.drop("RED", axis=1)
     df = df.drop("공항버스", axis=1)
 
+
     # 기타          187
     # 공연장        162
     # 미술관        122
@@ -626,8 +704,24 @@ def xy_trans(x, y):
 
 def area_data():
     # 원본 데이터 출처
-    # https://data.seoul.go.kr/dataList/OA-15560/S/1/datasetView.doa
+    # https://data.seoul.go.kr/dataList/OA-15560/S/1/datasetView.do
     df = pd.read_csv('./origin/서울시 우리마을가게 상권분석서비스(상권영역).csv', encoding='cp949')
+
+    # https://data.seoul.go.kr/dataList/OA-15577/S/1/datasetView.do
+    # 서울시 우리마을가게 상권분석서비스(상권-점포)
+    df1 = pd.read_csv('./origin/서울시 우리마을가게 상권분석서비스(상권-점포).csv', encoding='cp949')
+
+    # https://data.seoul.go.kr/dataList/OA-15568/S/1/datasetView.do
+    # 서울시 우리마을가게 상권분석서비스(상권-생활인구)
+    df2 = pd.read_csv('./origin/서울시 우리마을가게 상권분석서비스(상권-생활인구).csv', encoding='cp949')
+
+    # https://data.seoul.go.kr/dataList/OA-15572/S/1/datasetView.do
+    # 서울시 우리마을가게 상권분석서비스(상권-추정매출)
+    df17 = pd.read_csv('./origin/서울시 우리마을가게 상권분석서비스(상권-추정매출)_2017.csv', encoding='cp949')
+    df18 = pd.read_csv('./origin/서울시 우리마을가게 상권분석서비스(상권-추정매출)_2018.csv', encoding='cp949')
+    df19 = pd.read_csv('./origin/서울시 우리마을가게 상권분석서비스(상권-추정매출)_2019.csv', encoding='cp949')
+    df20 = pd.read_csv('./origin/서울시우리마을가게상권분석서비스(상권-추정매출)_2020.csv', encoding='cp949')
+
 
     # 데이터 프레임 복사
     DataFrame = df.copy()
@@ -653,7 +747,510 @@ def area_data():
     df = df.drop("행정동_코드", axis=1)
     df = df.drop("형태정보", axis=1)
 
+    df.rename(columns={'상권_구분_코드_명': 'area_type', '상권_코드': 'code', '상권_코드_명': 'area_name'}, inplace=True)
+    df.reset_index(drop=True, inplace=True)
 
-    # 상권_구분_코드,	상권_구분_코드_명,	상권_코드,  상권_코드_명,    lon,   lat
+
+    ## 상권-점포 분석
+    df11 = df1[df1['서비스_업종_코드_명'] == '커피-음료']
+    df12 = df11.drop("개업_율", axis=1)
+    df12 = df12.drop("개업_점포_수", axis=1)
+    df12 = df12.drop("폐업_률", axis=1)
+    df12 = df12.drop("폐업_점포_수", axis=1)
+    df12 = df12.drop("프랜차이즈_점포_수", axis=1)
+    df12 = df12.drop("상권_구분_코드", axis=1)
+    df12 = df12.drop("서비스_업종_코드", axis=1)
+    df12 = df12.drop("서비스_업종_코드_명", axis=1)
+    df12.rename(columns={'상권_구분_코드_명': 'area_type', '상권_코드': 'code', '상권_코드_명': 'area_name'}, inplace=True)
+    df12.reset_index(drop=True, inplace=True)
+
+
+    ## 상권-생활인구 분석
+    df21 = df2.loc[:, '기준 년코드':'총_생활인구_수']
+    df22 = df21.drop("상권_구분_코드", axis=1)
+    df22.rename(columns={'상권_구분_코드_명': 'area_type', '상권_코드': 'code', '상권_코드_명': 'area_name'}, inplace=True)
+    df22.reset_index(drop=True, inplace=True)
+
+    ## 17년도 상권-추정매출 분석
+    df171 = df17[df17['서비스_업종_코드_명'] == '커피-음료']
+    df171 = df171.loc[:, '기준_년_코드':'분기당_매출_금액']
+    df171 = df171.drop("상권_구분_코드", axis=1)
+    df171 = df171.drop("서비스_업종_코드", axis=1)
+    df171 = df171.drop("서비스_업종_코드_명", axis=1)
+    df171.rename(columns={'상권_구분_코드_명': 'area_type', '상권_코드': 'code', '상권_코드_명': 'area_name'}, inplace=True)
+    df171.reset_index(drop=True, inplace=True)
+
+    ## 18년도 상권-추정매출 분석
+    df181 = df18[df18['서비스_업종_코드_명'] == '커피-음료']
+    df181 = df181.loc[:, '기준_년_코드':'분기당_매출_금액']
+    df181 = df181.drop("상권_구분_코드", axis=1)
+    df181 = df181.drop("서비스_업종_코드", axis=1)
+    df181 = df181.drop("서비스_업종_코드_명", axis=1)
+    df181.rename(columns={'상권_구분_코드_명': 'area_type', '상권_코드': 'code', '상권_코드_명': 'area_name'}, inplace=True)
+    df181.reset_index(drop=True, inplace=True)
+
+    ## 19년도 상권-추정매출 분석
+    df191 = df19[df19['서비스_업종_코드_명'] == '커피-음료']
+    df191 = df191.loc[:, '기준_년_코드':'분기당_매출_금액']
+    df191 = df191.drop("상권_구분_코드", axis=1)
+    df191 = df191.drop("서비스_업종_코드", axis=1)
+    df191 = df191.drop("서비스_업종_코드_명", axis=1)
+    df191.rename(columns={'상권_구분_코드_명': 'area_type', '상권_코드': 'code', '상권_코드_명': 'area_name'}, inplace=True)
+    df191.reset_index(drop=True, inplace=True)
+
+    ## 20년도 상권-추정매출 분석
+    df201 = df20[df20['서비스_업종_코드_명'] == '커피-음료']
+    df201 = df201.loc[:, '기준_년_코드':'분기당_매출_금액']
+    df201 = df201.drop("상권_구분_코드", axis=1)
+    df201 = df201.drop("서비스_업종_코드", axis=1)
+    df201 = df201.drop("서비스_업종_코드_명", axis=1)
+    df201.rename(columns={'상권_구분_코드_명': 'area_type', '상권_코드': 'code', '상권_코드_명': 'area_name'}, inplace=True)
+    df201.reset_index(drop=True, inplace=True)
+
+    # area_store : 상권 내 카페 점포 수
+    # area_sim_store : 상권 내 유사 업종 점포 수
+    # tot_customer :
+    # avg_take :
+
+    # 빈 새 칼럼 추가
+    df[['area_store', 'area_sim_store', 'tot_customer', 'avg_take']] = 0
+
+    area_store = []
+    area_sim_store = []
+    tot_customer = []
+    avg_take = []
+
+    for i in range(len(df.index)):
+        # 이름에는 특수문자나 띄어쓰기 등으로 오류 나기 쉬우므로 모든 데이터프레임들에 공통적으로 들어있는 상권 코드를 기준으로 정렬, 계산.
+        code = df['code'][i]
+        # 서로 다른 3종의 분야(점포, 생활인구, 매출)에 포함되지 않은 점포들에 대한 대책.
+        # 여기서는 4년간의 매출전표에서 누락된 데이터의 평균치 왜곡을 막기 위해 not_null_count로 값이 있는 칸의 개수를 셈한다.
+        not_null_count = 0
+        take1 = df171[df171['code'] == code]['분기당_매출_금액'].mean()
+        take2 = df181[df181['code'] == code]['분기당_매출_금액'].mean()
+        take3 = df191[df191['code'] == code]['분기당_매출_금액'].mean()
+        take4 = df201[df201['code'] == code]['분기당_매출_금액'].mean()
+        if take1:
+            not_null_count = not_null_count + 1
+        if take2:
+            not_null_count = not_null_count + 1
+        if take3:
+            not_null_count = not_null_count + 1
+        if take4:
+            not_null_count = not_null_count + 1
+
+        area_store.append(df12[df12['code'] == code]['점포_수'].mean())
+        area_sim_store.append(df12[df12['code'] == code]['유사_업종_점포_수'].mean())
+        tot_customer.append(df22[df22['code'] == code]['총_생활인구_수'].mean())
+        avg_take.append((take1 + take2 + take3 + take4) / not_null_count)
+
+    df['area_store'] = area_store
+    df['area_sim_store'] = area_sim_store
+    df['tot_customer'] = tot_customer
+    df['avg_take'] = avg_take
+
+    # 매출 이외의 NaN값들에 대한 처우. 평균은 아니지만 누락되었다는것은 상대적으로 중요도가 떨어져 제외되었다고 추측, 나머지 데이터풀의 하위 25% 값을 적용한다.
+    # 하위권의 value들은 편차가 그다지 크지 않아 왜곡 효과는 작을것으로 추측.
+    df['area_store'].fillna(3, inplace=True)
+    df['area_sim_store'].fillna(3, inplace=True)
+    df['tot_customer'].fillna(201490, inplace=True)
+    df['avg_take'].fillna(45304590, inplace=True)  # 전부 하위 25% 수치
 
     df.to_csv('./after/area_data.csv', index=False, encoding='cp949')
+
+
+def main_data():
+    df_cafe = pd.read_csv('./after/cafe_data.csv', encoding='cp949')
+    df_traffic = pd.read_csv('./after/traffic_data.csv', encoding='cp949')
+    df_population = pd.read_csv('./after/population_data.csv', encoding='cp949')
+    df_area = pd.read_csv('./after/area_data.csv', encoding='cp949')
+    df_culture = pd.read_csv('./after/culture_data.csv', encoding='cp949')
+
+    # df_cafe 데이터프레임을 메인으로, 필요한 칼럼만 추출해 새 데이터프레임 우선 생성
+    # - 카페의 좌표정보(x) [경도, longitude] (1)
+    # - 카페의 좌표정보(y) [위도, latitude] (1)
+    # - 소재지면적 [단위 m^2] (1)
+    # - 타겟 : 3년 생존 가능 : 1, 불가능 : 0
+    # '영업상태코드' 는 생존
+    df = df_cafe[['long', 'lat', '소재지면적', 'target', '영업상태코드']]
+
+    # 0~2로 분류했던 프렌차이즈 코드를 one-hot encoding 방식으로 변환.
+    # 초기 값 설정
+    df[['저가','고가', '기타']] = [1,1,1]
+
+    # - 카페의 종류 == 저가형 프렌차이즈 (0 or 1)
+    # - 카페의 종류 == 고가형 프렌차이즈 (0 or 1)
+    # - 카페의 종류 == 기타, 개인카페 (0 or 1)
+    dfff = []
+    for i in range(len(df['long'])):
+        if df_cafe['franchise'][i] == 0:
+            dfff.append([1, 0, 0])
+        elif df_cafe['franchise'][i] == 1:
+            dfff.append([0, 1, 0])
+        else:
+            dfff.append([0, 0, 1])
+    df.loc[:, ['저가', '고가', '기타']] = dfff
+
+    # 가까운 카페의 수를 집계하기 위한 새 칼럼 생성
+    df['near_cafe'] = 0
+    # 누적 업소 수가 아닌, 현재 영업중인 가게의 수 만을 집계하기 위해 식별용 코드 임시로 생성
+    df['alive'] = df_cafe['영업상태코드']
+
+    # 반경 200미터 내에 존재하는 카페의 수를 value값으로 저장
+    countt = []
+    for i in range(len(df.index)):
+        count = 0
+        stdlong = df.iloc[i]['long']
+        stdlat = df.iloc[i]['lat']
+        df2 = df.iloc[:][df['long'] > stdlong - 0.0018]
+        df2 = df2.iloc[:][df['long'] < stdlong + 0.0018]
+        df2 = df2.iloc[:][df['lat'] > stdlat - 0.0018]
+        df2 = df2.iloc[:][df['lat'] < stdlat + 0.0018]
+        df3 = df2
+        df3.reset_index(drop=True, inplace=True)
+
+        for i in range(len(df2.index)):
+            if df3['alive'][i] == 1:
+                objlong = df3['long'][i]
+                objlat = df3['lat'][i]
+                dis = cal_distance(stdlong, stdlat, objlong, objlat)
+                if dis < 200:
+                    count = count + 1
+        countt.append(count)
+
+    df['near_cafe'] = countt
+
+
+    ## 교통 정보 집계
+    # 버스 관련 칼럼 생성
+    # - 매장 근처 '버스 정류장'의 수 (반경 200m 내) (2)
+    # - 매장 근처 '버스 정류장'의 [출퇴근 거점] 총 점수 (2)
+    # - 매장 근처 '버스 정류장'의 [이용객 다수 거점] 총 점수 (2)
+    # - 매장 근처 '버스 정류장'의 [환승 거점] 총 점수 (2)
+    df[['near_bus', 'near_bus_commute', 'near_bus_many', 'near_bus_transfer']] = 0
+
+    # 버스 데이터셋과 지하철 데이터셋을 고유 코드를 기준으로 분리.
+    # dfb = bus, dfs = subway
+    dfb = df_traffic[df_traffic['code'] < 30000]
+    dfs = df_traffic[df_traffic['code'] >= 30000]
+
+    # 거리 200m내에 존재하는 버스 정류장의 수와 특성 점수 계산, 입력.
+    countb = []
+    countc = []
+    countm = []
+    countt = []
+
+    for i in range(len(df.index)):
+        count = 0  # 주변
+        count1 = 0  # 출근
+        count2 = 0  # 많이
+        count3 = 0  # 환승
+        stdlong = df.iloc[i]['long']
+        stdlat = df.iloc[i]['lat']
+        df2 = dfb.iloc[:][dfb['Y'] > stdlong - 0.0018]
+        df2 = df2.iloc[:][dfb['Y'] < stdlong + 0.0018]
+        df2 = df2.iloc[:][dfb['X'] > stdlat - 0.0018]
+        df2 = df2.iloc[:][dfb['X'] < stdlat + 0.0018]
+        df3 = df2
+        df3.reset_index(drop=True, inplace=True)
+
+        for i in range(len(df3.index)):
+            objlong = df3['Y'][i]
+            objlat = df3['X'][i]
+            dis = cal_distance(stdlong, stdlat, objlong, objlat)
+            if dis < 200:
+                count = count + 1
+                count1 = count1 + df3['coms'][i]
+                count2 = count2 + df3['many75'][i]
+                count3 = count3 + df3['trans'][i]
+
+        countb.append(count)
+        countc.append(count1)
+        countm.append(count2)
+        countt.append(count3)
+
+    df['near_bus'] = countb
+    df['near_bus_commute'] = countc
+    df['near_bus_many'] = countm
+    df['near_bus_transfer'] = countt
+
+    # 지하철 관련 칼럼 생성
+    # - 매장 초 근처 '지하철 역'의 수(반경 100m 내) (2)
+    # - 매장 근처 '지하철 역'의 수(반경 600m 내) (2)
+    # - 매장 근처 '지하철 역'의 [출퇴근 거점] 총 점수 (2)
+    # - 매장 근처 '지하철 역'의 [이용객 다수 거점] 총 점수 (2)
+    # - 매장 근처 '지하철 역'의 [환승 거점] 총 점수 (2)
+    df[['near_subway100', 'near_subway600', 'near_subway_commute', 'near_subway_many', 'near_subway_transfer']] = 0
+
+    # 거리 100, 600m내에 존재하는 지하철 역의 수와 특성 점수 계산, 입력.
+    counts100 = []
+    counts600 = []
+    countc = []
+    countm = []
+    countt = []
+
+    for i in range(len(df.index)):
+        count100 = 0  # 주변100
+        count600 = 0  # 주변600
+        count1 = 0  # 출근
+        count2 = 0  # 많이
+        count3 = 0  # 환승
+        stdlong = df.iloc[i]['long']
+        stdlat = df.iloc[i]['lat']
+
+        # 600m 근처. 기타 옵션들은 이것을 기준으로 정의한다.
+        df2 = dfs.iloc[:][dfs['Y'] > stdlong - 0.0054]
+        df2 = df2.iloc[:][dfs['Y'] < stdlong + 0.0054]
+        df2 = df2.iloc[:][dfs['X'] > stdlat - 0.0054]
+        df2 = df2.iloc[:][dfs['X'] < stdlat + 0.0054]
+        df3 = df2
+        df3.reset_index(drop=True, inplace=True)
+
+        for i in range(len(df3.index)):
+            objlong = df3['Y'][i]
+            objlat = df3['X'][i]
+            dis = cal_distance(stdlong, stdlat, objlong, objlat)
+            if dis < 600:
+                count600 = count600 + 1
+                count1 = count1 + df3['coms'][i]
+                count2 = count2 + df3['many75'][i]
+                count3 = count3 + df3['trans'][i]
+                if dis <= 100:
+                    count100 = count100 + 1
+
+        counts100.append(count100)
+        counts600.append(count600)
+        countc.append(count1)
+        countm.append(count2)
+        countt.append(count3)
+
+    df['near_subway100'] = counts100
+    df['near_subway600'] = counts600
+    df['near_subway_commute'] = countc
+    df['near_subway_many'] = countm
+    df['near_subway_transfer'] = countt
+
+    # 인덱스 리셋
+    df.reset_index(drop=True, inplace=True)
+
+    # 구, 인구 관련 칼럼 생성
+    # - 소속 구 (3)
+    # - 소속 구 총 근로자수 (3)
+    # - 소속 구 총 유동 인구 수 (3)
+    # - 소속 구 유동 인구 20,30대 비율 (3)
+    # - 소속 구 유동 인구 40,50,60대 비율 (3)
+    # - 소속 구 인구 밀도 (3)
+    df[['gu', 'gu_pop', 'gu_work', 'gu_rate_2030', 'gu_rate_405060', 'gu_density']] = 0
+
+    guname = []  # 구 이름
+    guw = []  # 총 근로자
+    countpop = []  # 총 유동
+    count20 = []  # 2030
+    count40 = []  # 405060
+    countden = []  # 밀도
+    #error = []
+
+    for i in range(len(df.index)):
+        stdlong = df.iloc[i]['long']
+        stdlat = df.iloc[i]['lat']
+        gu = gu_finder(stdlong, stdlat)
+        gu1 = df_population[df_population['gu'] == gu]
+
+        try:
+            total = int(gu1.loc[:, '10~20M':'60~69W'].sum(axis=1))
+            t2030 = int(gu1.loc[:, '20~29M':'20~29W'].sum(axis=1))
+            t405060 = int(gu1.loc[:, '40~49M':'60~69W'].sum(axis=1))
+
+            guname.append(gu)
+            guw.append(int(gu1['total worker']))
+            countpop.append(total)
+            count20.append(t2030 / total)
+            count40.append(t405060 / total)
+            countden.append(float(gu1['density']))
+        except:
+            #error.append(i)
+            guname.append(0)
+            guw.append(0)
+            countpop.append(0)
+            count20.append(0)
+            count40.append(0)
+            countden.append(0)
+
+    df['gu'] = guname
+    df['gu_pop'] = countpop
+    df['gu_work'] = guw
+    df['gu_rate_2030'] = count20
+    df['gu_rate_405060'] = count40
+    df['gu_density'] = countden
+
+
+    # 문화시설 관련 칼럼 생성
+    df['near_culture'] = 0
+
+    # 문화시설 중 좌표가 비어있는 결측치 행 삭제.
+    df_culture.drop(df_culture[df_culture['X좌표'].isnull()].index, inplace=True)
+    df_culture.reset_index(drop=True, inplace=True)
+
+    # x, y 좌표에 숫자 이외의 값이 들어있는경우를 찾아내어 이상치 처리.
+    erl = []
+    for i in range(len(df_culture.index)):
+        if df_culture['X좌표'][i] == '0' or df_culture['Y좌표'][i] == '0':
+            erl.append(i)
+        try:
+            float(df_culture['X좌표'][i])
+        except:
+            erl.append(i)
+
+    df_culture.drop(erl, inplace=True)
+    df_culture.reset_index(drop=True, inplace=True)
+
+    # 상기 작업은 모두 아래 형변환을 위한 작업임.
+    # 원본 df_culture의 좌표값이 string 형태로
+    df_culture[['X좌표', 'Y좌표']] = df_culture[['X좌표', 'Y좌표']].astype(float)
+
+    # - 매장 주변(1000m) 문화시설 수(4)
+    countc = []
+    for i in range(len(df.index)):
+        count = 0
+        stdlong = df.iloc[i]['long']
+        stdlat = df.iloc[i]['lat']
+        df2 = df_culture.iloc[:][df_culture['Y좌표'] > stdlong - 0.009]
+        df2 = df2.iloc[:][df_culture['Y좌표'] < stdlong + 0.009]
+        df2 = df2.iloc[:][df_culture['X좌표'] > stdlat - 0.009]
+        df2 = df2.iloc[:][df_culture['X좌표'] < stdlat + 0.009]
+        df3 = df2
+        df3.reset_index(drop=True, inplace=True)
+
+        for i in range(len(df2.index)):
+            objlong = df3['Y좌표'][i]
+            objlat = df3['X좌표'][i]
+            dis = cal_distance(stdlong, stdlat, objlong, objlat)
+            if dis < 1000:
+                count = count + 1
+        countc.append(count)
+
+    df['near_culture'] = countc
+
+
+    #
+    # 소속상권 찾기
+    # 250m 기준 무소속 11081개
+    # '발달상권','골목상권','기타상권','무소속','area_count','area_cafe','area_store','area_avgTake', 'area_avgCustomer'
+    bal = []
+    gol = []
+    gi = []
+    no = []
+    area_count = []
+    area_cafe = []
+    area_store = []
+    area_avgTake = []
+    area_avgCustomer = []
+
+    for i in range(len(df.index)):
+        temp_dis = 300
+        temp_code = 0
+        a_count = 0
+
+        stdlong = df.iloc[i]['long']
+        stdlat = df.iloc[i]['lat']
+
+        df2 = df_area.iloc[:][df_area['lon'] > stdlong - 0.00225]
+        df2 = df2.iloc[:][df_area['lon'] < stdlong + 0.00225]
+        df2 = df2.iloc[:][df_area['lat'] > stdlat - 0.00225]
+        df2 = df2.iloc[:][df_area['lat'] < stdlat + 0.00225]
+        df3 = df2
+        df3.reset_index(drop=True, inplace=True)
+
+        for i in range(len(df3.index)):
+            objlong = df3['lon'][i]
+            objlat = df3['lat'][i]
+
+            dis = cal_distance(stdlong, stdlat, objlong, objlat)
+            # 거리를 받아올때마다 250m 이내인지 비교
+            if dis < 250:
+                # 해당되는 표본이 들어올때마다 비교하여 최소값 갱신. 최소값일때의 코드값 저장하여 상권정보 저장.
+                # 마지막에 남은 상권정보가 점포에서 가장 가까운 상권.
+                if dis < temp_dis:
+                    temp_dis = dis
+                    temp_code = df3['code'][i]
+                    a_count = a_count + 1
+        # 모든 탐색, 비교가 끝나고 거리가 가장 가까운 1개 상권의 코드가 temp_code에 저장됨
+        if a_count == 0:
+            # 저장된 코드 없음. 일치하는 상권 없음
+            # 일단 모든 데이터 0처리.
+            bal.append(0)
+            gol.append(0)
+            gi.append(0)
+            no.append(1)
+            area_count.append(0)
+            area_cafe.append(0)
+            area_store.append(0)
+            area_avgTake.append(0)
+            area_avgCustomer.append(0)
+
+        else:
+            # 검색된 상권 있음
+            if df_area[df_area['code'] == temp_code]['area_type'].values[0] == '발달상권':
+                bal.append(1)
+                gol.append(0)
+                gi.append(0)
+                no.append(0)
+            elif df_area[df_area['code'] == temp_code]['area_type'].values[0] == '골목상권':
+                bal.append(0)
+                gol.append(1)
+                gi.append(0)
+                no.append(0)
+            else:
+                bal.append(0)
+                gol.append(0)
+                gi.append(1)
+                no.append(0)
+
+            ac1 = df_area[df_area['code'] == temp_code]['area_store']
+            as1 = df_area[df_area['code'] == temp_code]['area_sim_store']
+            aa1 = df_area[df_area['code'] == temp_code]['avg_take']
+            aa2 = df_area[df_area['code'] == temp_code]['tot_customer']
+
+            area_count.append(a_count)
+            area_cafe.append(float(ac1))
+            area_store.append(float(as1))
+            area_avgTake.append(float(aa1))
+            area_avgCustomer.append(float(aa2))
+
+    df['발달상권'] = bal
+    df['골목상권'] = gol
+    df['기타상권'] = gi
+    df['무소속'] = no
+    df['area_count'] = area_count
+    df['area_cafe'] = area_cafe
+    df['area_store'] = area_store
+    df['area_avgTake'] = area_avgTake
+    df['area_avgCustomer'] = area_avgCustomer
+
+    # - 소속 상권의 발달상권 여부 (0 or 1) (5)
+    # - 소속 상권의 골목상권 여부 (0 or 1) (5)
+    # - 소속 상권의 기타상권 여부 (0 or 1) (5)
+    # - 소속된 상권 없음(0 or 1) (5)
+    # - 250m 반경 내 상권의 개수 (5)
+    # - 소속 상권 소속 카페 수 (5)
+    # - 소속 상권 소속 유사업종 가게 수 (5)
+    # - 소속 상권의 평균 매출량 (5)
+    # - 소속 상권의 평균 하루 이용자 수 (5)
+    # 전부 불러왔으므로 one-hot encoding 및 해당하는 상권 정보 value들을 따와서 입력
+    df[['발달상권', '골목상권', '기타상권', '무소속', 'area_count', 'area_cafe', 'area_store', 'area_avgTake', 'area_avgCustomer']] = 0
+
+    df = df[['long', 'lat', 'gu', '소재지면적', 'near_cafe', 'near_bus', 'near_bus_commute', 'near_bus_transfer',
+             'near_bus_many', 'near_subway100', 'near_subway600', 'near_subway_commute', 'near_subway_transfer',
+             'near_subway_many', 'gu_pop', 'gu_work', 'gu_rate_2030', 'gu_rate_405060', 'gu_density', 'near_culture',
+             'area_cafe', 'area_store', 'area_avgTake', 'area_avgCustomer', 'area_count', '저가', '고가', '기타', '발달상권',
+             '골목상권', '기타상권', '무소속', 'target']]
+
+    # 구 정보가 입력되지 않은 결측치 제거
+    df_drop2 = df[df['gu'] == 0]
+    df = df.drop(index=df_drop2.index)
+    
+    # 마지막으로 인덱스 리셋.
+    df.reset_index(drop=True, inplace=True)
+
+    # 분석용 메인 데이터셋 완성
+    # df.to_csv("./after/main_data.csv", index=False, encoding='cp949')
