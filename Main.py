@@ -8,3 +8,4 @@ import Data_Processing
 #Data_Processing.cafe_data()
 #Data_Processing.culture_data()
 #Data_Processing.area_data()
+Data_Processing.main_data()
