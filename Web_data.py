@@ -16,7 +16,7 @@ def near_cafe_db(long, lat):
     # 반경 200미터 내에 존재하는 카페의 수를 value값으로 리턴
     df_main = pd.read_csv('./after/cafe_data.csv', encoding='cp949')
     df = df_main[['long', 'lat','영업상태코드']]
-    df = df[df['영업상태코드' == 1]]
+    df = df[df['영업상태코드'] == 1]
 
     count = 0
     stdlong = long
