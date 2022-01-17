@@ -170,12 +170,70 @@ def near_culture_db(long, lat):
 
     return count
 
+
 def area_cafe_db(long, lat):
     # area_cafe
     # area_avgTake
     # area_avgCustomer
     # area_count
+    df_area = pd.read_csv('./after/area_data.csv', encoding='cp949')
 
-    # 4번째 기능에도 써야하기 때문에 area는 새 데이터 구현
-    pass
+    # 기본 변수 설정
+    temp_dis = 300
+    bal = 0
+    gol = 0
+    gi = 0
+    no = 0
+    area_count = 0
+
+    # 입력받은 좌표를 기준점으로 설정
+    stdlong = long
+    stdlat = lat
+
+    # 250m 정사각형 영역 내의 데이터 추출
+    df2 = df_area.iloc[:][df_area['lon'] > stdlong - 0.00225]
+    df2 = df2.iloc[:][df_area['lon'] < stdlong + 0.00225]
+    df2 = df2.iloc[:][df_area['lat'] > stdlat - 0.00225]
+    df2 = df2.iloc[:][df_area['lat'] < stdlat + 0.00225]
+    df3 = df2
+    df3.reset_index(drop=True, inplace=True)
+
+    # 영역 내의 점포들 대상으로 거리 계산&비교
+    for i in range(len(df3.index)):
+        objlong = df3['lon'][i]
+        objlat = df3['lat'][i]
+
+        dis = Functions.cal_distance(stdlong, stdlat, objlong, objlat)
+        # 거리를 받아올때마다 250m 이내인지 비교
+        if dis < 250:
+            # 해당되는 표본이 들어올때마다 비교하여 최소값 갱신. 최소값일때의 코드값 저장하여 상권정보 저장.
+            # 마지막에 남은 상권정보가 점포에서 가장 가까운 상권.
+            if dis < temp_dis:
+                temp_dis = dis
+                temp_code = df3['code'][i]
+                area_count = area_count + 1
+
+    # temp_code = 가장 가까운 상권의 코드
+
+    if area_count == 0 :
+        # 변동없음 = 250m이내의 상권이 하나도 없었음.
+        no = 1
+    else:
+        # 검색된 상권 있음
+        if df3[df3['code'] == temp_code]['area_type'].values[0] == '발달상권':
+            bal = 1
+        elif df3[df3['code'] == temp_code]['area_type'].values[0] == '골목상권':
+            gol = 1
+        else:
+            gi = 1
+
+    area_cafe = df3[df3['code'] == temp_code]['area_store'].values[0]
+    area_avgTake = df3[df3['code'] == temp_code]['avg_take'].values[0]
+    area_avgCustomer = df3[df3['code'] == temp_code]['tot_customer'].values[0]
+
+    # 모든 탐색, 비교가 끝나고 거리가 가장 가까운 1개 상권의 코드가 temp_code에 저장됨
+
+    # 4번째 기능은 API로 긁어오는걸로 하고 분석용 정보는 다른 데이터셋과 동일하게 처리한다
+
+    return bal, gol, gi, no, area_cafe, area_avgTake, area_avgCustomer, area_count, temp_code
 
