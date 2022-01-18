@@ -207,11 +207,12 @@ def area_cafe_db(long, lat):
         # 거리를 받아올때마다 250m 이내인지 비교
         if dis < 250:
             # 해당되는 표본이 들어올때마다 비교하여 최소값 갱신. 최소값일때의 코드값 저장하여 상권정보 저장.
+            area_count = area_count + 1
+                
             # 마지막에 남은 상권정보가 점포에서 가장 가까운 상권.
             if dis < temp_dis:
                 temp_dis = dis
                 temp_code = df3['code'][i]
-                area_count = area_count + 1
 
     # temp_code = 가장 가까운 상권의 코드
 
