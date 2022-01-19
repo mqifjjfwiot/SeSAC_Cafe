@@ -84,3 +84,6 @@ def cal_distance(x1,y1,x2,y2):
     return distance
 
 
+
+def area_info(long, lat):
+    pass
