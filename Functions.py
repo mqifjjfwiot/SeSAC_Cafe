@@ -85,5 +85,64 @@ def cal_distance(x1,y1,x2,y2):
 
 
 
-def area_info(long, lat):
-    pass
+def area_data(long,lat) : 
+        
+    apikey = '6c485a494c6d71693738536e6e6144'
+    # 년도는 14년~20년까지 4자리로 입력받기. str타입으로.
+    area_year = '2020'
+    # 데이터 갯수도 str타입으로.
+    number = '500'
+
+    # 가장 가까운 구역 찾는 함수에서 입력받아 사용
+    # area_code = Web_data.area_cafe_db(long, lat)[8]
+    area_return = area_cafe_db(long, lat)
+    area_code = str(area_return[8])
+    # return bal, gol, gi, no, area_cafe, area_avgTake, area_avgCustomer, area_count, temp_code
+    
+    # A : 골목상권, D : 발달상권, K,R,U : 기타상권
+    # 리턴 값 받아서 사용
+    if area_return[0] == 1:
+        # bal == 1
+        area_type = 'D'
+    elif area_return[1] == 1:
+        # gol == 1
+        area_type = 'A'
+    else :
+        area_type = ''
+    
+    URL = 'http://openapi.seoul.go.kr:8088/' + apikey + '/json/VwsmTrdarSelngQq/1/'+ number +'/' + area_year + '/' + area_type
+
+    # 카페/음료 = 'CS100010'
+    cafe_code = 'CS100006'
+    
+
+
+
+    r = requests.get(URL)
+    if r.status_code == 200:
+        data = r.json()
+        #print(data)
+        
+        if area_type :
+            # 빈칸이 아닌, 'A' or 'D' 일때만 참
+            for i in range(len(data['VwsmTrdarSelngQq']['row'])) :
+                print(i)
+                #data = r.json()
+                if data['VwsmTrdarSelngQq']['row'][i]['TRDAR_CD'] == area_code and data['VwsmTrdarSelngQq']['row'][i]['SVC_INDUTY_CD'] == cafe_code : 
+                    print(data['VwsmTrdarSelngQq']['row'][i])
+                    area_data = data['VwsmTrdarSelngQq']['row'][i]
+                    print('-------------------------------')
+                else :
+                    print('---')
+        else :
+            # 빈칸. 기타 상권.
+            for i in range(len(data['VwsmTrdarSelngQq']['row'])) :
+                print(i)
+                #data = r.json()
+                if data['VwsmTrdarSelngQq']['row'][i]['TRDAR_CD'] == area_code and data['VwsmTrdarSelngQq']['row'][i]['SVC_INDUTY_CD'] == cafe_code and data['VwsmTrdarSelngQq']['row'][i]['SVC_INDUTY_CD'] != ('A' or 'D'): 
+                    print(data['VwsmTrdarSelngQq']['row'][i])
+                    area_data = data['VwsmTrdarSelngQq']['row'][i]
+                    print('-------------------------------')
+                else :
+                    print('---')
+
