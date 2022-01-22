@@ -144,5 +144,5 @@ def area_data(long,lat) :
                     area_data = data['VwsmTrdarSelngQq']['row'][i]
                     print('-------------------------------')
                 else :
-                    print('---')
+                    print('-----')
 
